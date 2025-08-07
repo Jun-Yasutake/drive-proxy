@@ -6,7 +6,7 @@ const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const { google } = require('googleapis');
-const { Readable } = require('stream'); // ← 追加
+const { Readable } = require('stream');
 require('dotenv').config();
 
 const app = express();
@@ -40,7 +40,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 
     const media = {
       mimeType: req.file.mimetype,
-      body: Readable.from(req.file.buffer), // ← 修正箇所
+      body: Readable.from(req.file.buffer),
     };
 
     const response = await drive.files.create({
@@ -57,6 +57,13 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     console.error('アップロード失敗:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// ==============================
+// GET / → 動作確認用ルート
+// ==============================
+app.get('/', (req, res) => {
+  res.send('Google Drive Proxy Server is running.');
 });
 
 // ==============================
