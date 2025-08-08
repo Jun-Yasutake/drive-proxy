@@ -67,6 +67,33 @@ app.get('/', (req, res) => {
 });
 
 // ==============================
+// POST /create-folder → 新規フォルダ作成
+// ==============================
+app.post('/create-folder', express.json(), async (req, res) => {
+  try {
+    const { name } = req.body;
+
+    const fileMetadata = {
+      name,
+      mimeType: 'application/vnd.google-apps.folder',
+    };
+
+    const response = await drive.files.create({
+      resource: fileMetadata,
+      fields: 'id, name, webViewLink',
+    });
+
+    res.json({
+      message: 'フォルダ作成成功',
+      folder: response.data,
+    });
+  } catch (error) {
+    console.error('フォルダ作成失敗:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==============================
 // サーバー起動
 // ==============================
 const PORT = process.env.PORT || 3000;
