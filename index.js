@@ -1,7 +1,3 @@
-// ==============================
-// Google Drive Proxy Server
-// ==============================
-
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
@@ -22,16 +18,24 @@ const oauth2Client = new google.auth.OAuth2(
   process.env.REDIRECT_URI
 );
 
-// アクセストークンを設定
+// refresh_token を使ってアクセストークンをセット
 oauth2Client.setCredentials({
   refresh_token: process.env.REFRESH_TOKEN,
 });
 
+// Google Drive API のインスタンス
 const drive = google.drive({ version: 'v3', auth: oauth2Client });
 
-// ==============================
-// POST /upload → Google Drive にファイルアップロード
-// ==============================
+/**
+ * 動作確認用
+ */
+app.get('/', (req, res) => {
+  res.send('Google Drive Proxy Server is running.');
+});
+
+/**
+ * ファイルアップロード（ルート直下）
+ */
 app.post('/upload', upload.single('file'), async (req, res) => {
   try {
     const fileMetadata = {
@@ -59,39 +63,75 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// ==============================
-// POST /create-folder → 新規フォルダを作成＋公開リンク設定
-// ==============================
+/**
+ * 指定フォルダにファイルをアップロード
+ * POST /upload-to-folder
+ * Body: { folderId: string, file: FormData(file) }
+ */
+app.post('/upload-to-folder', upload.single('file'), async (req, res) => {
+  try {
+    const { folderId } = req.body;
+
+    const fileMetadata = {
+      name: req.file.originalname,
+      parents: [folderId],
+    };
+
+    const media = {
+      mimeType: req.file.mimetype,
+      body: Readable.from(req.file.buffer),
+    };
+
+    const response = await drive.files.create({
+      resource: fileMetadata,
+      media,
+      fields: 'id, name, webViewLink',
+    });
+
+    res.json({
+      message: '指定フォルダへのアップロード成功',
+      file: response.data,
+    });
+  } catch (error) {
+    console.error('フォルダアップロード失敗:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * フォルダ作成 API
+ */
 app.post('/create-folder', async (req, res) => {
   try {
     const { name } = req.body;
 
-    // フォルダ作成
-    const folderMetadata = {
+    const fileMetadata = {
       name,
       mimeType: 'application/vnd.google-apps.folder',
     };
 
     const folder = await drive.files.create({
-      resource: folderMetadata,
+      resource: fileMetadata,
       fields: 'id, name, webViewLink',
     });
 
-    const folderId = folder.data.id;
-
-    // 「リンクを知っている全員に公開」権限を付与
+    // 共有リンクの作成（公開リンク）
     await drive.permissions.create({
-      fileId: folderId,
+      fileId: folder.data.id,
       requestBody: {
         role: 'reader',
         type: 'anyone',
       },
     });
 
-    // webViewLink は元の folder.data に含まれる
+    const updatedFolder = await drive.files.get({
+      fileId: folder.data.id,
+      fields: 'id, name, webViewLink',
+    });
+
     res.json({
       message: 'フォルダ作成成功',
-      folder: folder.data,
+      folder: updatedFolder.data,
     });
   } catch (error) {
     console.error('フォルダ作成失敗:', error);
@@ -99,17 +139,8 @@ app.post('/create-folder', async (req, res) => {
   }
 });
 
-// ==============================
-// GET / → 動作確認用
-// ==============================
-app.get('/', (req, res) => {
-  res.send('Google Drive Proxy Server is running.');
-});
-
-// ==============================
 // サーバー起動
-// ==============================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 プロキシサーバーが起動しました: http://localhost:${PORT}`);
+  console.log(`🚀 サーバー起動: http://localhost:${PORT}`);
 });
