@@ -23,7 +23,6 @@ oauth2Client.setCredentials({
   refresh_token: process.env.REFRESH_TOKEN,
 });
 
-// Google Drive API のインスタンス
 const drive = google.drive({ version: 'v3', auth: oauth2Client });
 
 /**
@@ -34,7 +33,7 @@ app.get('/', (req, res) => {
 });
 
 /**
- * ファイルアップロード（ルート直下）
+ * ルートにファイルをアップロード
  */
 app.post('/upload', upload.single('file'), async (req, res) => {
   try {
@@ -65,8 +64,6 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 
 /**
  * 指定フォルダにファイルをアップロード
- * POST /upload-to-folder
- * Body: { folderId: string, file: FormData(file) }
  */
 app.post('/upload-to-folder', upload.single('file'), async (req, res) => {
   try {
@@ -99,7 +96,7 @@ app.post('/upload-to-folder', upload.single('file'), async (req, res) => {
 });
 
 /**
- * フォルダ作成 API
+ * フォルダ作成と共有リンク付与
  */
 app.post('/create-folder', async (req, res) => {
   try {
@@ -115,7 +112,6 @@ app.post('/create-folder', async (req, res) => {
       fields: 'id, name, webViewLink',
     });
 
-    // 共有リンクの作成（公開リンク）
     await drive.permissions.create({
       fileId: folder.data.id,
       requestBody: {
@@ -124,17 +120,41 @@ app.post('/create-folder', async (req, res) => {
       },
     });
 
-    const updatedFolder = await drive.files.get({
+    const updated = await drive.files.get({
       fileId: folder.data.id,
       fields: 'id, name, webViewLink',
     });
 
     res.json({
       message: 'フォルダ作成成功',
-      folder: updatedFolder.data,
+      folder: updated.data,
     });
   } catch (error) {
     console.error('フォルダ作成失敗:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * ファイルを別フォルダに移動
+ */
+app.post('/move-file', async (req, res) => {
+  const { fileId, sourceFolderId, destinationFolderId } = req.body;
+
+  try {
+    const response = await drive.files.update({
+      fileId,
+      addParents: destinationFolderId,
+      removeParents: sourceFolderId,
+      fields: 'id, name, webViewLink, parents',
+    });
+
+    res.json({
+      message: 'ファイル移動成功',
+      file: response.data,
+    });
+  } catch (error) {
+    console.error('ファイル移動失敗:', error);
     res.status(500).json({ error: error.message });
   }
 });
