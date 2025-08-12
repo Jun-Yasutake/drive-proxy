@@ -1,3 +1,7 @@
+// ==============================
+// Google Drive Proxy Server
+// ==============================
+
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
@@ -23,24 +27,22 @@ oauth2Client.setCredentials({
   refresh_token: process.env.REFRESH_TOKEN,
 });
 
+// Google Drive API のインスタンス
 const drive = google.drive({ version: 'v3', auth: oauth2Client });
 
-/**
- * 動作確認用
- */
+// ==============================
+// GET / → 動作確認
+// ==============================
 app.get('/', (req, res) => {
   res.send('Google Drive Proxy Server is running.');
 });
 
-/**
- * ルートにファイルをアップロード
- */
+// ==============================
+// POST /upload → ルート直下にアップロード
+// ==============================
 app.post('/upload', upload.single('file'), async (req, res) => {
   try {
-    const fileMetadata = {
-      name: req.file.originalname,
-    };
-
+    const fileMetadata = { name: req.file.originalname };
     const media = {
       mimeType: req.file.mimetype,
       body: Readable.from(req.file.buffer),
@@ -52,19 +54,17 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       fields: 'id, name, webViewLink',
     });
 
-    res.json({
-      message: 'アップロード成功',
-      file: response.data,
-    });
+    res.json({ message: 'アップロード成功', file: response.data });
   } catch (error) {
     console.error('アップロード失敗:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-/**
- * 指定フォルダにファイルをアップロード
- */
+// ==============================
+// POST /upload-to-folder → 指定フォルダへアップロード
+// (multipart/form-data: file, folderId)
+// ==============================
 app.post('/upload-to-folder', upload.single('file'), async (req, res) => {
   try {
     const { folderId } = req.body;
@@ -73,7 +73,6 @@ app.post('/upload-to-folder', upload.single('file'), async (req, res) => {
       name: req.file.originalname,
       parents: [folderId],
     };
-
     const media = {
       mimeType: req.file.mimetype,
       body: Readable.from(req.file.buffer),
@@ -82,84 +81,142 @@ app.post('/upload-to-folder', upload.single('file'), async (req, res) => {
     const response = await drive.files.create({
       resource: fileMetadata,
       media,
-      fields: 'id, name, webViewLink',
+      fields: 'id, name, webViewLink, parents',
     });
 
-    res.json({
-      message: '指定フォルダへのアップロード成功',
-      file: response.data,
-    });
+    res.json({ message: '指定フォルダへのアップロード成功', file: response.data });
   } catch (error) {
     console.error('フォルダアップロード失敗:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-/**
- * フォルダ作成と共有リンク付与
- */
+// ==============================
+// POST /create-folder → 単体フォルダ作成（任意公開）
+// Body: { name: string, makePublic?: boolean }
+// ==============================
 app.post('/create-folder', async (req, res) => {
   try {
-    const { name } = req.body;
-
-    const fileMetadata = {
-      name,
-      mimeType: 'application/vnd.google-apps.folder',
-    };
+    const { name, makePublic = false } = req.body;
 
     const folder = await drive.files.create({
-      resource: fileMetadata,
+      resource: { name, mimeType: 'application/vnd.google-apps.folder' },
       fields: 'id, name, webViewLink',
     });
 
-    await drive.permissions.create({
-      fileId: folder.data.id,
-      requestBody: {
-        role: 'reader',
-        type: 'anyone',
-      },
-    });
+    const folderId = folder.data.id;
 
+    if (makePublic) {
+      await drive.permissions.create({
+        fileId: folderId,
+        requestBody: { role: 'reader', type: 'anyone' },
+      });
+    }
+
+    // 共有設定直後の最新リンクを取得
     const updated = await drive.files.get({
-      fileId: folder.data.id,
+      fileId: folderId,
       fields: 'id, name, webViewLink',
     });
 
-    res.json({
-      message: 'フォルダ作成成功',
-      folder: updated.data,
-    });
+    res.json({ message: 'フォルダ作成成功', folder: updated.data });
   } catch (error) {
     console.error('フォルダ作成失敗:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-/**
- * ファイルを別フォルダに移動
- */
+// ==============================
+// POST /move-file → ファイルを別フォルダへ移動
+// Body: { fileId, sourceFolderId, destinationFolderId }
+// ==============================
 app.post('/move-file', async (req, res) => {
-  const { fileId, sourceFolderId, destinationFolderId } = req.body;
-
   try {
+    const { fileId, sourceFolderId, destinationFolderId } = req.body;
+
     const response = await drive.files.update({
       fileId,
       addParents: destinationFolderId,
       removeParents: sourceFolderId,
-      fields: 'id, name, webViewLink, parents',
+      fields: 'id, name, parents, webViewLink',
     });
 
-    res.json({
-      message: 'ファイル移動成功',
-      file: response.data,
-    });
+    res.json({ message: 'ファイル移動成功', file: response.data });
   } catch (error) {
     console.error('ファイル移動失敗:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
+// ==============================
+// POST /create-template-folders → テンプレート一括作成
+// Body: { rootName: string, makePublic?: boolean }
+// 生成: ルート(rootName) / フォルダA / フォルダB / フォルダC
+// ==============================
+app.post('/create-template-folders', async (req, res) => {
+  try {
+    const { rootName, makePublic = false } = req.body;
+    if (!rootName || typeof rootName !== 'string') {
+      return res.status(400).json({ error: 'rootName は必須です' });
+    }
+
+    // 1) ルート作成
+    const root = await drive.files.create({
+      resource: { name: rootName, mimeType: 'application/vnd.google-apps.folder' },
+      fields: 'id, name, webViewLink',
+    });
+    const rootId = root.data.id;
+
+    // 2) 子フォルダ作成（A/B/C）
+    const childrenNames = ['フォルダA', 'フォルダB', 'フォルダC'];
+    const childrenCreated = await Promise.all(
+      childrenNames.map((name) =>
+        drive.files.create({
+          resource: {
+            name,
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [rootId],
+          },
+          fields: 'id, name, webViewLink, parents',
+        })
+      )
+    );
+
+    // 3) 公開設定（任意）：root と子フォルダすべてに付与
+    if (makePublic) {
+      const allIds = [rootId, ...childrenCreated.map((c) => c.data.id)];
+      await Promise.all(
+        allIds.map((fileId) =>
+          drive.permissions.create({
+            fileId,
+            requestBody: { role: 'reader', type: 'anyone' },
+          })
+        )
+      );
+    }
+
+    // 4) 最新リンクを取得（webViewLink を確実に反映）
+    const [rootInfo, ...childrenInfo] = await Promise.all([
+      drive.files.get({ fileId: rootId, fields: 'id, name, webViewLink' }),
+      ...childrenCreated.map((c) =>
+        drive.files.get({ fileId: c.data.id, fields: 'id, name, webViewLink, parents' })
+      ),
+    ]);
+
+    res.json({
+      message: 'テンプレート作成成功',
+      root: rootInfo.data,
+      children: childrenInfo.map((r) => r.data),
+    });
+  } catch (error) {
+    console.error('テンプレート作成失敗:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==============================
 // サーバー起動
+// ==============================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 サーバー起動: http://localhost:${PORT}`);
